@@ -1,0 +1,14 @@
+{
+  "servers": {
+    "matlab": {
+      "type": "stdio",
+      "command": "/Users/mihir/.local/bin/matlab-mcp-core-server",
+      "args": [
+        "--matlab-root",
+        "/Applications/MATLAB_R2026a.app",
+        "--matlab-display-mode",
+        "nodesktop"
+      ]
+    }
+  }
+}

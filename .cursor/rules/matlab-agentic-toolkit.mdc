@@ -1,0 +1,12 @@
+---
+description: MATLAB Agentic Toolkit — skills location and MCP usage for this repo
+alwaysApply: true
+---
+
+# MATLAB Agentic Toolkit
+
+This workspace uses the sibling clone at `../matlab-agentic-toolkit/` (parent: `Projects/`).
+
+For MATLAB tasks, read the appropriate `SKILL.md` there (setup, testing, debugging, apps, Live Scripts, etc.). Skills are also symlinked under `~/.agents/skills/` on this machine.
+
+Use the `matlab` MCP server when available (`evaluate_matlab_code`, `run_matlab_file`, `run_matlab_test_file`, `check_matlab_code`, `detect_matlab_toolboxes`).

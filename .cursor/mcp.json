@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "matlab": {
+      "command": "${userHome}/.local/bin/matlab-mcp-core-server",
+      "args": [
+        "--matlab-root",
+        "/Applications/MATLAB_R2026a.app",
+        "--matlab-display-mode",
+        "nodesktop"
+      ]
+    }
+  }
+}
