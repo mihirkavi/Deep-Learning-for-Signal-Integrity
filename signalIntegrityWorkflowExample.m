@@ -8,6 +8,12 @@
 
 clearvars; clc; close all;
 
+% Ensure project root is on path so +signalIntegrity resolves when CWD differs.
+projectRoot = fileparts(mfilename('fullpath'));
+if isempty(which('signalIntegrity.resolveWorkflowOptions'))
+    addpath(projectRoot);
+end
+
 %% Toolbox overview
 disp(signalIntegrity.buildToolboxStatusTable());
 
