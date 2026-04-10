@@ -1,0 +1,6 @@
+.DS_Store
+results_46433/
+signalIntegrityResults/
+*.asv
+*.mlx.autosave
+.venv-pdf/
