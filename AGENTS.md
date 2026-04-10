@@ -2,6 +2,8 @@
 
 The toolkit lives next to this repo: `../matlab-agentic-toolkit/` (same parent folder as this project).
 
+**Runtime note:** MATLAB code in this repository does **not** import or depend on the toolkit. The sibling clone is used for **editor/agent integration** (skills, MCP setup, optional workflows), not for executing signal-integrity or workbench logic.
+
 ### For any coding agent
 
 - **Skills (shared convention):** This machine has MATLAB skills linked under `~/.agents/skills/` pointing at that clone. After `git pull` in the toolkit repo, skills stay current.

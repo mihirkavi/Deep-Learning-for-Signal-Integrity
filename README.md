@@ -20,6 +20,13 @@ The tracked MAT-file in this repository is intentionally zero-filled, so
 fresh clones automatically use synthetic mode until you replace the
 template targets with real simulation data.
 
+## Signal Integrity AI Workbench (desktop app)
+
+A separate, full **uifigure** application for surrogate eye-metric prediction, sweeps,
+comparisons, training, and reporting lives under
+[`SignalIntegrityAIWorkbench/`](SignalIntegrityAIWorkbench/README.md). Start with
+`launchSignalIntegrityAIWorkbench` after `startup_SignalIntegrityAIWorkbench`.
+
 ## Entry Points
 
 - `runSignalIntegrityWorkflow.m`: public function entry point
