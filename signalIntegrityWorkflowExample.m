@@ -1,10 +1,13 @@
 %% Signal Integrity Workflow Example
 % This walkthrough reproduces the paper-inspired workflow in a compact,
 % inspectable MATLAB project. The script:
-% 1) reports relevant toolboxes,
-% 2) resolves the workflow options,
-% 3) trains the eye-height and eye-width regressors, and
-% 4) compares the validation metrics against the reference paper.
+% 1) summarizes relevant toolboxes (including Signal Integrity Toolbox when installed),
+% 2) explains objectives, inputs, and constraints in plain language,
+% 3) trains the eye-height and eye-width regressors with progress in the command window,
+% 4) shows integrated figures: training curves, native Signal Integrity Toolbox
+%    eyes when available, predictions vs validation, input sensitivity, and
+%    a reference RMSE comparison,
+% 5) summarizes how to interpret validation vs simulation and how to use the trained nets.
 
 clearvars; clc; close all;
 
@@ -14,8 +17,12 @@ if isempty(which('signalIntegrity.resolveWorkflowOptions'))
     addpath(projectRoot);
 end
 
-%% Toolbox overview
+%% Installed toolboxes (Signal Integrity and related products)
+fprintf('\n=== Installed toolboxes relevant to signal integrity workflows ===\n');
 disp(signalIntegrity.buildToolboxStatusTable());
+
+%% Narrative: SI Toolbox role, goals, design variables, constraints, figure roadmap
+signalIntegrity.printWorkflowWalkthroughIntro();
 
 %% Configure the workflow
 % The tracked `signalIntegrityExampleData.mat` file is intentionally
@@ -26,8 +33,12 @@ disp(signalIntegrity.buildToolboxStatusTable());
 % Set `SIGNAL_INTEGRITY_EXAMPLE_QUICK_MODE=1` for a faster smoke test.
 workflowOptions = signalIntegrity.resolveWorkflowOptions();
 workflowOptions.dataFile = "signalIntegrityExampleData.mat";
-workflowOptions.showPlots = usejava("desktop");
-workflowOptions.showProgress = false;
+workflowOptions.showPlots = false;
+workflowOptions.showProgress = usejava("desktop");
+% Optional SI Toolbox waveform override:
+% workflowOptions.siWaveformMatFile = "myEyeWaveform.mat";
+% workflowOptions.siWaveformVariable = "samples";
+% workflowOptions.siWaveformTimeVariable = "time";
 
 fprintf("\nThis run uses populated reference data when available.\n");
 fprintf("Otherwise it switches to the deterministic synthetic fallback.\n");
@@ -37,7 +48,7 @@ fprintf("\nTraining the models. Full mode can take a few minutes.\n");
 workflowResults = runSignalIntegrityWorkflow(workflowOptions);
 fprintf("Resolved data mode: %s\n", workflowResults.options.dataMode);
 
-%% Review the results
+%% Review the results (tables)
 disp(workflowResults.summaryTable);
 
 for experimentKey = workflowResults.experimentOrder
@@ -50,8 +61,11 @@ for experimentKey = workflowResults.experimentOrder
     disp(experimentResult.referenceOptimizerComparisonTable);
 end
 
-if workflowOptions.showPlots
-    signalIntegrity.plotValidationSummary(workflowResults);
+signalIntegrity.printWorkflowWalkthroughOutro(workflowResults);
+
+%% Figures: training progress, SI eye diagram, prediction vs validation, sensitivity
+if usejava("desktop")
+    signalIntegrity.plotExampleWalkthroughFigures(workflowResults);
 end
 
 %% References

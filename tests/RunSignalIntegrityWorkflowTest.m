@@ -109,6 +109,74 @@ classdef RunSignalIntegrityWorkflowTest < matlab.unittest.TestCase
             testCase.verifyFalse(workflowResults.options.showProgress);
         end
 
+        function testResolveWorkflowOptionsAddsSiWaveformDefaults(testCase)
+            workflowOptions = signalIntegrity.resolveWorkflowOptions(struct());
+
+            testCase.verifyEqual(workflowOptions.siWaveformSource, "auto");
+            testCase.verifyEqual(workflowOptions.siWaveformMatFile, "");
+            testCase.verifyEqual(workflowOptions.siWaveformVariable, "");
+            testCase.verifyEqual(workflowOptions.siWaveformTimeVariable, "");
+            testCase.verifyEmpty(workflowOptions.siWaveformSampleInterval);
+            testCase.verifyEmpty(workflowOptions.siWaveformSymbolTime);
+            testCase.verifyEqual(workflowOptions.siWaveformSamplesPerSymbol, 16);
+        end
+
+        function testResolveSiWaveformSourceLoadsUserMatWaveform(testCase)
+            temporaryFolder = string(tempname);
+            mkdir(temporaryFolder);
+            testCase.addTeardown(@() rmdir(temporaryFolder, 's'));
+
+            waveformFile = fullfile(temporaryFolder, "waveform.mat");
+            time = (0:255)' * 2e-12;
+            samples = sin(2 * pi * (0:255)' / 32);
+            symbolTime = 32e-12;
+            save(waveformFile, 'samples', 'time', 'symbolTime');
+
+            workflowOptions = signalIntegrity.resolveWorkflowOptions(struct( ...
+                "siWaveformSource", "user", ...
+                "siWaveformMatFile", waveformFile));
+            siWaveform = signalIntegrity.resolveSiWaveformSource(workflowOptions);
+
+            testCase.verifyTrue(siWaveform.isAvailable);
+            testCase.verifyEqual(siWaveform.sampleInterval, 2e-12, AbsTol=1e-18);
+            testCase.verifyEqual(siWaveform.symbolTime, 32e-12, AbsTol=1e-18);
+            testCase.verifyEqual(numel(siWaveform.samples), 256);
+        end
+
+        function testResolveSiWaveformSourceLoadsUserCsvWaveform(testCase)
+            temporaryFolder = string(tempname);
+            mkdir(temporaryFolder);
+            testCase.addTeardown(@() rmdir(temporaryFolder, 's'));
+
+            waveformFile = fullfile(temporaryFolder, "waveform.csv");
+            writematrix((1:256)', waveformFile);
+
+            workflowOptions = signalIntegrity.resolveWorkflowOptions(struct( ...
+                "siWaveformSource", "user", ...
+                "siWaveformMatFile", waveformFile, ...
+                "siWaveformSampleInterval", 5e-12, ...
+                "siWaveformSymbolTime", 40e-12));
+            siWaveform = signalIntegrity.resolveSiWaveformSource(workflowOptions);
+
+            testCase.verifyTrue(siWaveform.isAvailable);
+            testCase.verifyEqual(siWaveform.sampleInterval, 5e-12, AbsTol=1e-18);
+            testCase.verifyEqual(siWaveform.symbolTime, 40e-12, AbsTol=1e-18);
+            testCase.verifyEqual(siWaveform.samples(1), 1, AbsTol=1e-12);
+        end
+
+        function testResolveSiWaveformSourceReturnsDemoWaveform(testCase)
+            testCase.assumeTrue(signalIntegrity.isSignalIntegrityToolboxAvailable());
+
+            workflowOptions = signalIntegrity.resolveWorkflowOptions(struct( ...
+                "siWaveformSource", "demo"));
+            siWaveform = signalIntegrity.resolveSiWaveformSource(workflowOptions);
+
+            testCase.verifyTrue(siWaveform.isAvailable);
+            testCase.verifyGreaterThan(numel(siWaveform.samples), 1000);
+            testCase.verifyEqual(siWaveform.sourceDescription, ...
+                "deterministic demo waveform for eyeDiagramSI");
+        end
+
         function testBuildExampleDataFromSiExportProducesLoadableDataset(testCase)
             temporaryFolder = string(tempname);
             mkdir(temporaryFolder);

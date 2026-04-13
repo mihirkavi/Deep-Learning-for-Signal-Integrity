@@ -179,6 +179,8 @@ optimizerResult.trainingRelativeErrorPct = trainingRelativeErrorPct;
 optimizerResult.validationRelativeErrorPct = validationRelativeErrorPct;
 optimizerResult.trainingPredictions = trainingPredictions;
 optimizerResult.validationPredictions = validationPredictions;
+optimizerResult.trainingTargets = trainingTargets;
+optimizerResult.validationTargets = validationTargets;
 end
 
 function [lossValue, networkGradients] = computeModelGradients(network, dlFeatures, dlTargets, l2Penalty)

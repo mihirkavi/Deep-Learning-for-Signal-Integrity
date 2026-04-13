@@ -90,6 +90,57 @@ if ~isfield(resolvedOptions, "figureOutputFolder")
     resolvedOptions.figureOutputFolder = "signalIntegrityResults";
 end
 
+if ~isfield(resolvedOptions, "siWaveformSource") || strlength(string(resolvedOptions.siWaveformSource)) == 0
+    resolvedOptions.siWaveformSource = "auto";
+end
+
+resolvedOptions.siWaveformSource = validatestring( ...
+    char(string(resolvedOptions.siWaveformSource)), ...
+    {'auto', 'demo', 'user', 'none'});
+resolvedOptions.siWaveformSource = string(resolvedOptions.siWaveformSource);
+
+if ~isfield(resolvedOptions, "siWaveformMatFile")
+    resolvedOptions.siWaveformMatFile = "";
+end
+resolvedOptions.siWaveformMatFile = string(resolvedOptions.siWaveformMatFile);
+
+if ~isfield(resolvedOptions, "siWaveformVariable")
+    resolvedOptions.siWaveformVariable = "";
+end
+resolvedOptions.siWaveformVariable = string(resolvedOptions.siWaveformVariable);
+
+if ~isfield(resolvedOptions, "siWaveformTimeVariable")
+    resolvedOptions.siWaveformTimeVariable = "";
+end
+resolvedOptions.siWaveformTimeVariable = string(resolvedOptions.siWaveformTimeVariable);
+
+if ~isfield(resolvedOptions, "siWaveformSampleInterval")
+    resolvedOptions.siWaveformSampleInterval = [];
+end
+
+if ~isempty(resolvedOptions.siWaveformSampleInterval)
+    validateattributes(resolvedOptions.siWaveformSampleInterval, {'numeric'}, ...
+        {'scalar', 'real', 'finite', 'positive'}, ...
+        mfilename, 'siWaveformSampleInterval');
+end
+
+if ~isfield(resolvedOptions, "siWaveformSymbolTime")
+    resolvedOptions.siWaveformSymbolTime = [];
+end
+
+if ~isempty(resolvedOptions.siWaveformSymbolTime)
+    validateattributes(resolvedOptions.siWaveformSymbolTime, {'numeric'}, ...
+        {'scalar', 'real', 'finite', 'positive'}, ...
+        mfilename, 'siWaveformSymbolTime');
+end
+
+if ~isfield(resolvedOptions, "siWaveformSamplesPerSymbol")
+    resolvedOptions.siWaveformSamplesPerSymbol = 16;
+end
+validateattributes(resolvedOptions.siWaveformSamplesPerSymbol, {'numeric'}, ...
+    {'scalar', 'real', 'finite', 'integer', '>=', 2}, ...
+    mfilename, 'siWaveformSamplesPerSymbol');
+
 if ~isfield(resolvedOptions, "showPlots")
     resolvedOptions.showPlots = usejava("desktop");
 end

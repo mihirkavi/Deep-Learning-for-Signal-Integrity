@@ -40,6 +40,51 @@ The exact physics must match **your** kit and rate; this table is only a **workf
 - **Kit download / open:** `openSignalIntegrityKit` (see script above).
 - **MAT builder:** `signalIntegrity.buildExampleDataFromSiExport` — reads CSV/tables, applies a **reproducible shuffle + split** to match [`getExperimentCatalog`](../+signalIntegrity/getExperimentCatalog.m) train/validation counts.
 
+## Waveform inputs for native SI eye diagrams
+
+The DNN in this repository trains on **tabular feature vectors** and scalar targets, but the walkthrough can also show a **native Signal Integrity Toolbox eye diagram**. That eye figure uses a separate waveform source resolved by workflow options:
+
+- `siWaveformSource`: `"auto"` (default), `"demo"`, `"user"`, or `"none"`.
+- `siWaveformMatFile`: MAT or CSV file containing waveform samples when you want the eye plot to follow your own link export.
+- `siWaveformVariable`: optional MAT variable name for the waveform vector.
+- `siWaveformTimeVariable`: optional MAT variable name for the time vector.
+- `siWaveformSampleInterval`: optional override when the file does not contain a time vector or sample interval.
+- `siWaveformSymbolTime`: optional override for the unit interval / symbol time.
+- `siWaveformSamplesPerSymbol`: default `16`; used when the walkthrough builds its deterministic demo waveform.
+
+### Preferred MAT layout
+
+Use a MAT-file with any of the following patterns:
+
+1. `samples` plus `time`
+2. `samples` plus `sampleInterval` and `symbolTime`
+3. Your own variable names, together with `siWaveformVariable` and `siWaveformTimeVariable`
+
+Example:
+
+```matlab
+samples = rxWaveform(:);
+time = (0:numel(samples)-1)' * 2e-12;
+symbolTime = 32e-12;
+save("myEyeWaveform.mat", "samples", "time", "symbolTime");
+```
+
+Then in the walkthrough:
+
+```matlab
+workflowOptions = signalIntegrity.resolveWorkflowOptions();
+workflowOptions.siWaveformMatFile = "myEyeWaveform.mat";
+workflowOptions.siWaveformVariable = "samples";
+workflowOptions.siWaveformTimeVariable = "time";
+```
+
+### CSV layout
+
+- One column: waveform samples only, together with `siWaveformSampleInterval` and `siWaveformSymbolTime`
+- Two columns: time in column 1, samples in column 2
+
+If you do **not** provide a waveform file, the walkthrough falls back to a **deterministic demo waveform** so `eyeDiagramSI` can still render a native SI eye without requiring an external export.
+
 ## Dependencies
 
 - **Training the DNN in this repo:** MATLAB + Deep Learning Toolbox only (see `signalIntegrity.buildToolboxStatusTable`).
