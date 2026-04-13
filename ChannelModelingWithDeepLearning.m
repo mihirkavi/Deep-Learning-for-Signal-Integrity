@@ -1,190 +1,268 @@
-%% Deep Learning for High-Speed Channel Modeling
-% This example trains a neural network to predict eye height from channel
-% design parameters, then visualizes how the eye diagram evolves as the
-% network learns — and compares the worst and best channel designs.
+%% Deep Learning for High-Speed Channel Modeling — Physics-Informed
 %
-% Toolboxes used:
-%   Deep Learning Toolbox    — trainnet, trainingOptions, dlnetwork
-%   Communications Toolbox   — comm.RaisedCosineTransmitFilter, awgn
-%   Signal Processing Toolbox — fir1, filter
+% A neural network surrogate learns to predict eye height from SerDes
+% design parameters.  Training is physics-informed: every gradient step
+% calls the SerDes Toolbox as a live physics oracle — no pre-generated
+% dataset needed.
+%
+% TX → Channel → RX pipeline
+%   TX FFE  — Feed-Forward Equalizer              (SerDes Toolbox)
+%   Channel — Frequency-dependent insertion loss   (SerDes Toolbox)
+%   RX CTLE — Continuous-Time Linear Equalizer     (SerDes Toolbox)
+%
+% Toolboxes
+%   SerDes Toolbox          — serdes.ChannelLoss, serdes.FFE, serdes.CTLE,
+%                             impulse2pulse, optPulseMetric, pulse2stateye
+%   Deep Learning Toolbox   — dlnetwork, dlfeval, dlgradient, adamupdate
+%   Signal Processing Toolbox — freqz
 
 %% Setup
 
 clearvars; close all; clc;
-rng(46433, "twister");
+rng(42, "twister");
 
-%% Generate Synthetic Channel Dataset  (Deep Learning Toolbox)
-% Reproduces the sample counts and target range from Lu et al.:
-%   717 training samples, 476 validation samples, 14 design parameters,
-%   eye height range 148–253 mV.
+%% SerDes System Constants
 
-[XTrain, YTrain, XVal, YVal] = generateSyntheticData( ...
-    717, 476, 14, [148 253], [32 24 16], 46433, 2.8);
+UI = 100e-12;          % symbol period  (10 Gbaud NRZ)
+N  = 32;               % oversampling ratio (samples per UI)
+dt = UI / N;           % sample interval
+BER_TARGET = 1e-6;     % BER used by optPulseMetric
 
-[XTrain_n, mu, sigma] = normalize(XTrain);
-XVal_n = (XVal - mu) ./ sigma;
+% Six design parameters — stored normalised to [0, 1] inside the network.
+% Row layout: [physical_min, physical_max]
+paramBounds = [
+     5,  20;    % 1  channelLoss_dB        (dB)
+    -0.2,  0;   % 2  ffePre                (tap weight)
+     0.6,  0.9; % 3  ffeMain               (tap weight)
+   -15,    0;   % 4  ctleDCGain            (dB)
+     0,   12;   % 5  ctlePeakGain          (dB)
+     4,   10];  % 6  ctlePeakFreq_GHz      (GHz)
 
-%% Build Network  (Deep Learning Toolbox)
-% Feedforward network: 14 inputs → [100 → 300 → 200] → 1 output (tanh activations)
+nFeat = size(paramBounds, 1);
+
+%% Build Neural Network  (Deep Learning Toolbox)
+% 6 inputs → [64 → 128 → 64] → 1 output (eye height in mV)
 
 net = dlnetwork([
-    featureInputLayer(14, Normalization="none")
-    fullyConnectedLayer(100)
+    featureInputLayer(nFeat, Normalization="none")
+    fullyConnectedLayer(64)
     tanhLayer
-    fullyConnectedLayer(300)
+    fullyConnectedLayer(128)
     tanhLayer
-    fullyConnectedLayer(200)
+    fullyConnectedLayer(64)
     tanhLayer
     fullyConnectedLayer(1)]);
 
-%% Pre-generate Base NRZ Waveform  (Communications Toolbox + Signal Processing Toolbox)
-% All eye diagrams use the same underlying symbol sequence so that the only
-% thing that changes across training snapshots is the predicted noise level.
+%% Pre-generate Validation Set  (SerDes Toolbox)
+% 40 random designs — each evaluated once up front for ground-truth labels.
 
-sps      = 32;        % samples per symbol
-nSymbols = 4000;      % waveform length in symbols
-
-txFilt   = comm.RaisedCosineTransmitFilter( ...
-    RolloffFactor=0.3, FilterSpanInSymbols=8, ...
-    OutputSamplesPerSymbol=sps, Gain=1);
-delay    = txFilt.FilterSpanInSymbols / 2 * sps;
-
-rawBits  = 2*randi([0 1], nSymbols + txFilt.FilterSpanInSymbols, 1) - 1;
-baseSig  = txFilt(rawBits);
-baseSig  = baseSig(delay+1 : delay+nSymbols*sps);
-
-% Apply bandwidth-limiting channel (Signal Processing Toolbox)
-chanFilter = fir1(32, 0.4);
-baseSig    = filter(chanFilter, 1, baseSig);
-baseSig    = baseSig ./ max(abs(baseSig));   % normalize to ±1
-
-%% Figure 1 — Eye Diagram Evolving During Training
-% Train in cumulative stages. At each snapshot, use the network's current
-% prediction to set the SNR of the synthesized waveform. As the prediction
-% converges to the true eye height, the eye diagram converges too.
-
-snapEpochs = [0, 2, 10, 50, 200];           % cumulative epoch milestones
-
-% Track a representative design (median eye height in validation set)
-[~, ord] = sort(YVal);
-trackIdx  = ord(round(numel(YVal)/2));
-trueH     = YVal(trackIdx);
-
-fig1 = figure(Color="w", Name="Eye Diagram: Training Progress");
-tl1  = tiledlayout(fig1, 1, numel(snapEpochs), ...
-    TileSpacing="compact", Padding="compact");
-title(tl1, "Predicted Eye Diagram Across Training Epochs", FontSize=11, FontWeight="bold");
-subtitle(tl1, sprintf("Tracking design with true eye height = %.0f mV", trueH), FontSize=9);
-
-for k = 1:numel(snapEpochs)
-
-    % Train for the incremental epochs at this stage
-    if k > 1
-        nEpochs = snapEpochs(k) - snapEpochs(k-1);
-        opts = trainingOptions("adam", ...
-            MaxEpochs           = nEpochs, ...
-            MiniBatchSize       = 25, ...
-            InitialLearnRate    = 0.001, ...
-            GradientThreshold   = 5, ...
-            GradientThresholdMethod = "l2norm", ...
-            Shuffle             = "every-epoch", ...
-            Plots               = "none", ...
-            Verbose             = false);
-        net = trainnet(XTrain_n, YTrain, net, "mse", opts);
-    end
-
-    % Predict eye height for tracked design, synthesize waveform
-    predH = double(minibatchpredict(net, XVal_n(trackIdx, :)));
-    wave  = applyNoise(baseSig, predH, [148 253]);
-
-    % Plot eye diagram
-    ax = nexttile(tl1);
-    plotEye(ax, wave, sps);
-    if k == 1
-        title(ax, sprintf("Before Training\nPred: %.0f mV", predH), FontSize=9);
-    else
-        title(ax, sprintf("Epoch %d\nPred: %.0f mV", snapEpochs(k), predH), FontSize=9);
+nVal = 40;
+fprintf('Generating %d validation samples via SerDes simulation...\n', nVal);
+XVal = rand(nVal, nFeat);
+YVal = zeros(nVal, 1);
+for i = 1:nVal
+    [~, YVal(i)] = runSerDes(XVal(i,:), paramBounds, UI, N, dt, BER_TARGET);
+    if mod(i, 10) == 0
+        fprintf('  %d/%d  (range so far: %.0f–%.0f mV)\n', ...
+            i, nVal, min(YVal(1:i)), max(YVal(1:i)));
     end
 end
+fprintf('Done.  Eye-height range: %.0f – %.0f mV\n\n', min(YVal), max(YVal));
 
-%% Figure 2 — Channel Before and After Design Optimization
-% The trained network ranks all validation designs by predicted eye height.
-% The worst design (lowest predicted height) represents an unoptimized channel.
-% The best design (highest predicted height) shows the result after using
-% the surrogate model to guide design selection.
+%% Physics-Informed Training  (Deep Learning Toolbox + SerDes Toolbox)
+%
+% At each iteration:
+%   1. Sample a random mini-batch of design parameters
+%   2. Call SerDes Toolbox to evaluate eye height (physics oracle)
+%   3. Compute MSE gradient through the network and apply Adam update
+%
+% The SerDes simulation IS the cost function — the network learns the
+% physics without ever seeing a pre-built dataset.
 
-allPred  = double(minibatchpredict(net, XVal_n));
+batchSize = 4;
+snapIters = [0, 10, 25, 50, 100];   % 0 = before any training
+learnRate = 0.005;
+
+avgGrad   = [];
+avgSqGrad = [];
+itersDone = 0;
+
+% Track the median-quality validation design across snapshots
+[~, trackIdx] = min(abs(YVal - median(YVal)));
+trueH = YVal(trackIdx);
+
+%% Figure 1 — Eye Diagram + Frequency Response During Training
+
+fig1 = figure(Color="w", Name="PINN Training Progress");
+tl1  = tiledlayout(fig1, 2, numel(snapIters), ...
+    TileSpacing="compact", Padding="compact");
+title(tl1, "Physics-Informed Neural Network: TX → Channel → RX Evolution", ...
+    FontSize=11, FontWeight="bold");
+subtitle(tl1, sprintf( ...
+    "Tracking design (true eye height = %.0f mV) | SerDes oracle at every gradient step", ...
+    trueH), FontSize=9);
+
+for si = 1:numel(snapIters)
+
+    % ── Train incrementally to this milestone ────────────────────────────
+    while itersDone < snapIters(si)
+        Xb = rand(batchSize, nFeat);
+        Yb = zeros(batchSize, 1);
+        for j = 1:batchSize
+            [~, Yb(j)] = runSerDes(Xb(j,:), paramBounds, UI, N, dt, BER_TARGET);
+        end
+
+        Xdl = dlarray(single(Xb'), "CB");
+        Ydl = dlarray(single(Yb'), "CB");
+        [~, grads] = dlfeval(@modelLoss, net, Xdl, Ydl);
+
+        itersDone = itersDone + 1;
+        [net.Learnables, avgGrad, avgSqGrad] = adamupdate( ...
+            net.Learnables, grads, avgGrad, avgSqGrad, itersDone, learnRate);
+    end
+
+    % ── Snapshot: predict + run SerDes for the tracked design ────────────
+    predH = double(extractdata( ...
+        forward(net, dlarray(single(XVal(trackIdx,:)'), "CB"))));
+    [impSnap, ~] = runSerDes(XVal(trackIdx,:), paramBounds, UI, N, dt, BER_TARGET);
+
+    if snapIters(si) == 0
+        panelLabel = sprintf("Before Training\nPred: %.0f mV", predH);
+    else
+        panelLabel = sprintf("Iter %d\nPred: %.0f mV", snapIters(si), predH);
+    end
+
+    % Top row: TX→Ch→RX frequency response
+    ax_f = nexttile(tl1, si);
+    plotFreqResp(ax_f, impSnap, dt);
+    title(ax_f, panelLabel, FontSize=8);
+
+    % Bottom row: eye diagram from SerDes pulse
+    ax_e = nexttile(tl1, numel(snapIters) + si);
+    plotEyeDiagram(ax_e, impSnap, N, dt);
+end
+
+%% Figure 2 — Channel Before and After Design Optimisation
+% The trained surrogate ranks all validation designs by predicted eye height.
+% Worst prediction → unoptimised design.  Best prediction → optimised design.
+
+allPred = zeros(nVal, 1);
+for i = 1:nVal
+    allPred(i) = double(extractdata( ...
+        forward(net, dlarray(single(XVal(i,:)'), "CB"))));
+end
 [~, iLo] = min(allPred);
 [~, iHi] = max(allPred);
 
-fig2 = figure(Color="w", Name="Channel: Before and After Optimization");
-tl2  = tiledlayout(fig2, 1, 2, TileSpacing="loose", Padding="compact");
-title(tl2, "High-Speed Channel: Before and After Design Optimization", ...
+fig2 = figure(Color="w", Name="Channel: Before and After Optimisation");
+tl2  = tiledlayout(fig2, 2, 2, TileSpacing="loose", Padding="compact");
+title(tl2, "TX → Channel → RX: Before and After Design Optimisation", ...
     FontSize=11, FontWeight="bold");
 
-nexttile(tl2);
-plotEye(gca, applyNoise(baseSig, YVal(iLo), [148 253]), sps);
-title(sprintf("Before Optimization\nEye Height = %.0f mV", YVal(iLo)), FontSize=10);
+for col = 1:2
+    idx  = [iLo iHi];   idx  = idx(col);
+    lbl  = ["Before Optimisation", "After Optimisation"];
 
-nexttile(tl2);
-plotEye(gca, applyNoise(baseSig, YVal(iHi), [148 253]), sps);
-title(sprintf("After Optimization\nEye Height = %.0f mV", YVal(iHi)), FontSize=10);
+    [imp2, eyeH2] = runSerDes(XVal(idx,:), paramBounds, UI, N, dt, BER_TARGET);
+    lo = paramBounds(:,1)'; hi = paramBounds(:,2)';
+    p  = XVal(idx,:) .* (hi - lo) + lo;   % physical units
 
-%% Local Functions
+    % Frequency response
+    nexttile(tl2, col);
+    plotFreqResp(gca, imp2, dt);
+    title(sprintf("%s\nEye Height = %.0f mV", lbl(col), eyeH2), FontSize=9);
 
-function wave = applyNoise(baseSig, eyeHeight_mV, heightRange)
-%applyNoise  Add AWGN scaled to reflect the predicted eye height.
-%   Higher eye height → higher SNR → wider eye opening.
-%   Uses awgn from Communications Toolbox.
-    alpha = max(0.02, min(0.98, ...
-        (eyeHeight_mV - heightRange(1)) / diff(heightRange)));
-    snrDb = 4 + 24 * alpha;          % 4 dB at min height → 28 dB at max
-    wave  = awgn(baseSig, snrDb, "measured");
+    % Eye diagram + parameter annotation
+    nexttile(tl2, 2 + col);
+    plotEyeDiagram(gca, imp2, N, dt);
+    xlabel(sprintf( ...
+        'Loss = %.0f dB   FFE = [%.2f  %.2f]   CTLE DC = %.0f dB  Peak = %.0f dB @ %.0f GHz', ...
+        p(1), p(2), p(3), p(4), p(5), p(6)), ...
+        FontSize=7, Interpreter="none");
 end
 
-function plotEye(ax, wave, sps)
-%plotEye  Overlay symbol-period traces to render an eye diagram.
-    nT     = floor(numel(wave) / sps);
-    traces = reshape(wave(1:nT*sps), sps, nT);
-    t_ui   = linspace(0, 1, sps);
-    cla(ax);
-    plot(ax, t_ui, traces, Color=[0.09 0.47 0.70 0.07], LineWidth=0.6);
-    xlim(ax, [0 1]);  ylim(ax, [-1.5 1.5]);
-    xlabel(ax, "Unit Interval (UI)");  ylabel(ax, "Amplitude");
-    grid(ax, "on");   box(ax, "on");
+%% ── Local Functions ──────────────────────────────────────────────────────────
+
+function [imp, eyeH_mV] = runSerDes(params01, bounds, UI, N, dt, ber)
+%runSerDes  Simulate TX FFE → Channel → RX CTLE using SerDes Toolbox.
+%
+%   params01  — 1×6 row, each element in [0,1]
+%   bounds    — 6×2 [min max] in physical units
+%   Returns combined impulse response and eye height (mV).
+
+    lo = bounds(:,1)'; hi = bounds(:,2)';
+    p  = params01 .* (hi - lo) + lo;     % physical units
+
+    % FFE tap design: pre + main + post, normalised to unit gain
+    ffePre  = p(2);
+    ffeMain = p(3);
+    ffePost = max(0, 1 - ffeMain - abs(ffePre));
+    s       = abs(ffePre) + ffeMain + ffePost;
+    ffeTaps = [ffePre ffeMain ffePost] / s;
+
+    % Channel insertion loss  (SerDes Toolbox)
+    ch  = serdes.ChannelLoss('Loss', p(1), 'dt', dt, ...
+                              'TargetFrequency', 1/(2*UI));
+
+    % TX Feed-Forward Equalizer  (SerDes Toolbox)
+    ffe = serdes.FFE('Mode', 1, 'WaveType', 'Impulse', ...
+                     'TapWeights', ffeTaps, ...
+                     'SymbolTime', UI, 'SampleInterval', dt);
+
+    % RX Continuous-Time Linear Equalizer  (SerDes Toolbox)
+    ctle = serdes.CTLE('Mode', 2, 'WaveType', 'Impulse', ...
+                       'DCGain', p(4), 'PeakingGain', p(5), ...
+                       'PeakingFrequency', p(6)*1e9, ...
+                       'SymbolTime', UI, 'SampleInterval', dt);
+
+    % Cascade: Channel → TX FFE → RX CTLE
+    imp = ch.impulse;
+    imp = ffe(imp);
+    [imp, ~] = ctle(imp);
+
+    % Eye-height metric  (SerDes Toolbox)
+    pulse   = impulse2pulse(imp, N, dt);
+    metrics = optPulseMetric(pulse, N, dt, ber);
+    eyeH_mV = max(0, metrics.maxEyeHeight * 1000);   % V → mV
 end
 
-function [XTrain, YTrain, XVal, YVal] = generateSyntheticData( ...
-        nTrain, nVal, nFeat, targetRange, teacherSizes, seed, noiseStd)
-%generateSyntheticData  Deterministic synthetic regression dataset.
+% ─────────────────────────────────────────────────────────────────────────────
 
-    XTrain = randn(nTrain, nFeat);
-    XVal   = randn(nVal,   nFeat);
-
-    saved = rng(seed, "twister");
-    cl    = onCleanup(@() rng(saved));
-    ls    = [nFeat, teacherSizes, 1];
-    W = cell(numel(ls)-1, 1);
-    b = cell(numel(ls)-1, 1);
-    for k = 1:numel(W)
-        W{k} = (0.25/sqrt(ls(k))) * randn(ls(k), ls(k+1));
-        b{k} = 0.02 * randn(1, ls(k+1));
-    end
-    clear cl;
-
-    YTrain = teacherFwd(XTrain, W, b);
-    YVal   = teacherFwd(XVal,   W, b);
-    allY   = rescale([YTrain; YVal], targetRange(1), targetRange(2));
-    allY   = min(max(allY + noiseStd*randn(size(allY)), ...
-                 targetRange(1)), targetRange(2));
-    YTrain = allY(1:nTrain);
-    YVal   = allY(nTrain+1:end);
+function [loss, gradients] = modelLoss(net, X, T)
+%modelLoss  MSE loss and gradients w.r.t. network learnables.
+    Y         = forward(net, X);
+    loss      = mean((Y - T).^2, "all");
+    gradients = dlgradient(loss, net.Learnables);
 end
 
-function Y = teacherFwd(X, W, b)
-    A = X;
-    for k = 1:numel(W)-1
-        A = tanh(A * W{k} + b{k});
-    end
-    Y = A * W{end} + b{end};
+% ─────────────────────────────────────────────────────────────────────────────
+
+function plotFreqResp(ax, imp, dt)
+%plotFreqResp  Magnitude response of the cascaded TX→Ch→RX impulse.
+%   Uses Signal Processing Toolbox freqz.
+    [H, f] = freqz(imp, 1, 512, 1/dt);
+    f_GHz  = f / 1e9;
+    fMax   = min(20, 1/(2*dt*1e9));   % cap at 20 GHz for readability
+    plot(ax, f_GHz, 20*log10(abs(H) + eps), "LineWidth", 1.2, "Color", [0.09 0.47 0.70]);
+    xlabel(ax, "Frequency (GHz)");
+    ylabel(ax, "|H| (dB)");
+    xlim(ax, [0, fMax]);
+    ylim(ax, [-60, 5]);
+    grid(ax, "on");
+    box(ax, "on");
+end
+
+% ─────────────────────────────────────────────────────────────────────────────
+
+function plotEyeDiagram(ax, imp, N, dt)
+%plotEyeDiagram  Render eye diagram density from pulse2stateye.
+%   Uses SerDes Toolbox pulse2stateye for the statistical eye.
+    pulse        = impulse2pulse(imp, N, dt);
+    [se, vh, th] = pulse2stateye(pulse, N, 2);
+    imagesc(ax, th, vh * 1000, se);
+    set(ax, "YDir", "normal");
+    colormap(ax, flipud(bone));
+    xlabel(ax, "Unit Interval (UI)");
+    ylabel(ax, "Amplitude (mV)");
+    xlim(ax, [min(th) max(th)]);
 end
