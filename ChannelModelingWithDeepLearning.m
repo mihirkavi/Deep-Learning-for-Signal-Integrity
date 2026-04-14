@@ -316,6 +316,7 @@ end
 function plotFreqResp(ax, imp, dt)
 %plotFreqResp  Magnitude response of the cascaded TX→Ch→RX impulse.
 %   Uses Signal Processing Toolbox freqz.
+    ax.Color = [1 1 1];   % prevent colormap bleed from imagesc axes
     [H, f] = freqz(imp, 1, 512, 1/dt);
     f_GHz  = f / 1e9;
     fMax   = min(20, 1/(2*dt*1e9));   % cap at 20 GHz for readability
@@ -340,5 +341,5 @@ function plotEyeDiagram(ax, imp, N, dt)
     colormap(ax, flipud(bone));
     xlabel(ax, "Unit Interval (UI)");
     ylabel(ax, "Amplitude (mV)");
-    xlim(ax, [0.5 1.5]);   % show central eye (pulse2stateye spans 2 UI)
+    xlim(ax, [min(th) max(th)]);   % use actual th range returned by pulse2stateye
 end
