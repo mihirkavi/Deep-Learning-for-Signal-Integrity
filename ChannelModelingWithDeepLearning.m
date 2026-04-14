@@ -82,25 +82,37 @@ fprintf('Done.  Eye-height range: %.0f – %.0f mV\n\n', min(YVal), max(YVal));
 batchSize = 4;
 snapIters = [0, 10, 25, 50, 100];   % 0 = before any training
 learnRate = 0.005;
+nIter     = max(snapIters);
 
 avgGrad   = [];
 avgSqGrad = [];
 itersDone = 0;
+lossHist  = nan(nIter, 1);   % track MSE loss at every iteration
 
 % Track the median-quality validation design across snapshots
 [~, trackIdx] = min(abs(YVal - median(YVal)));
 trueH = YVal(trackIdx);
 
-%% Figure 1 — Eye Diagram + Frequency Response During Training
+%% Figure 1 — Training Convergence + Eye Diagram Evolution
 
-fig1 = figure(Color="w", Name="PINN Training Progress");
+C   = struct("blue",  [0.09 0.45 0.70], ...   % consistent colour palette
+             "orange",[0.89 0.42 0.04], ...
+             "green", [0.17 0.54 0.33], ...
+             "grey",  [0.55 0.55 0.55], ...
+             "bg",    [0.97 0.97 0.99]);       % near-white panel background
+
+fig1 = figure(Color="w", Name="PINN Training Progress", ...
+    Position=[60 80 1200 520]);
 tl1  = tiledlayout(fig1, 2, numel(snapIters), ...
-    TileSpacing="compact", Padding="compact");
-title(tl1, "Physics-Informed Neural Network: TX → Channel → RX Evolution", ...
-    FontSize=11, FontWeight="bold");
-subtitle(tl1, sprintf( ...
-    "Tracking design (true eye height = %.0f mV) | SerDes oracle at every gradient step", ...
-    trueH), FontSize=9);
+    TileSpacing="tight", Padding="loose");
+
+% Figure-level title with solid background text
+sgt = title(tl1, ...
+    "Physics-Informed Neural Network  —  TX \rightarrow Channel \rightarrow RX", ...
+    FontSize=13, FontWeight="bold", Color=[0.1 0.1 0.1]);
+sub = subtitle(tl1, ...
+    sprintf("Tracking validation design  |  true eye height = %.0f mV  |  SerDes Toolbox oracle at every gradient step", trueH), ...
+    FontSize=9, Color=[0.3 0.3 0.3]);
 
 for si = 1:numel(snapIters)
 
@@ -114,37 +126,58 @@ for si = 1:numel(snapIters)
 
         Xdl = dlarray(single(Xb'), "CB");
         Ydl = dlarray(single(Yb'), "CB");
-        [~, grads] = dlfeval(@modelLoss, net, Xdl, Ydl);
+        [loss, grads] = dlfeval(@modelLoss, net, Xdl, Ydl);
 
         itersDone = itersDone + 1;
+        lossHist(itersDone) = double(extractdata(loss));
         [net.Learnables, avgGrad, avgSqGrad] = adamupdate( ...
             net.Learnables, grads, avgGrad, avgSqGrad, itersDone, learnRate);
     end
 
-    % ── Snapshot: predict + run SerDes for the tracked design ────────────
+    % ── Snapshot: predict for the tracked design ─────────────────────────
     predH = double(extractdata( ...
         forward(net, dlarray(single(XVal(trackIdx,:)'), "CB"))));
-    [impSnap, ~] = runSerDes(XVal(trackIdx,:), paramBounds, UI, N, dt, BER_TARGET);
+
+    % ── Top row: training loss curve (cumulative) ─────────────────────────
+    ax_l = nexttile(tl1, si);
+    ax_l.Color = C.bg;  ax_l.Box = "on";
+    ax_l.GridColor = [0.85 0.85 0.85];  ax_l.GridAlpha = 1;
+    hold(ax_l, "on");  grid(ax_l, "on");
+
+    valid = find(~isnan(lossHist));
+    if ~isempty(valid)
+        semilogy(ax_l, valid, lossHist(valid), ...
+            "Color", C.blue, "LineWidth", 1.6);
+        xline(ax_l, max(1,itersDone), "--", ...
+            "Color", C.orange, "LineWidth", 1.2, "Alpha", 0.85);
+    else
+        text(ax_l, 0.5, 0.5, "Initialised", ...
+            "Units","normalized", "HorizontalAlignment","center", ...
+            "Color", C.grey, "FontSize", 9);
+    end
+    xlim(ax_l, [1 nIter]);
+    xlabel(ax_l, "Iteration", FontSize=8);
+    ylabel(ax_l, "MSE Loss", FontSize=8);
 
     if snapIters(si) == 0
-        panelLabel = sprintf("Before Training\nPred: %.0f mV", predH);
+        hdr = "Before training";
     else
-        panelLabel = sprintf("Iter %d\nPred: %.0f mV", snapIters(si), predH);
+        hdr = sprintf("Iteration %d", snapIters(si));
     end
+    title(ax_l, sprintf("\\bf%s\\rm\n{\\color[rgb]{%s}Pred} = %.0f mV  |  True = %.0f mV", ...
+        hdr, num2str(C.orange), predH, trueH), ...
+        FontSize=8, Interpreter="tex");
+    hold(ax_l, "off");
 
-    % Top row: TX→Ch→RX frequency response
-    ax_f = nexttile(tl1, si);
-    plotFreqResp(ax_f, impSnap, dt);
-    title(ax_f, panelLabel, FontSize=8);
-
-    % Bottom row: eye diagram from SerDes pulse
+    % ── Bottom row: SerDes statistical eye diagram ────────────────────────
+    [impSnap, ~] = runSerDes(XVal(trackIdx,:), paramBounds, UI, N, dt, BER_TARGET);
     ax_e = nexttile(tl1, numel(snapIters) + si);
-    plotEyeDiagram(ax_e, impSnap, N, dt);
+    plotEyeDiagram(ax_e, impSnap, N, dt, predH, trueH);
 end
 
-%% Figure 2 — SerDes Link Setup: Before and After Design Optimisation
+%% Figure 2 — SerDes Link: Before and After Design Optimisation
 % The trained surrogate ranks all validation designs by predicted eye height.
-% Worst prediction → unoptimised design.  Best prediction → optimised design.
+% Worst prediction → unoptimised channel.  Best → optimised channel.
 
 allPred = zeros(nVal, 1);
 for i = 1:nVal
@@ -154,7 +187,6 @@ end
 [~, iLo] = min(allPred);
 [~, iHi] = max(allPred);
 
-% Resolve physical parameters for both designs
 lo_b = paramBounds(:,1)'; hi_b = paramBounds(:,2)';
 pLo  = XVal(iLo,:) .* (hi_b - lo_b) + lo_b;
 pHi  = XVal(iHi,:) .* (hi_b - lo_b) + lo_b;
@@ -162,99 +194,125 @@ pHi  = XVal(iHi,:) .* (hi_b - lo_b) + lo_b;
 [impHi, eyeHi] = runSerDes(XVal(iHi,:), paramBounds, UI, N, dt, BER_TARGET);
 
 fig2 = figure(Color="w", Name="SerDes Link: Before and After Optimisation", ...
-    Position=[100 100 1100 620]);
-tl2  = tiledlayout(fig2, 3, 2, TileSpacing="loose", Padding="compact");
-title(tl2, "TX → Channel → RX Link: Before and After Design Optimisation", ...
-    FontSize=11, FontWeight="bold");
+    Position=[120 60 1160 680]);
+tl2  = tiledlayout(fig2, 3, 2, TileSpacing="tight", Padding="loose");
+title(tl2, "TX \rightarrow Channel \rightarrow RX  —  Before and After Design Optimisation", ...
+    FontSize=13, FontWeight="bold", Color=[0.1 0.1 0.1]);
+subtitle(tl2, "Surrogate model identifies highest predicted eye-height design from validation set", ...
+    FontSize=9, Color=[0.35 0.35 0.35]);
 
-% Row 1: SerDes link block diagram for each design
+% ── Row 1: SerDes link block diagrams ────────────────────────────────────
+designs  = {pLo, pHi};
+eyeShown = [eyeLo, eyeHi];
+hdrColor = {[0.72 0.11 0.11], [0.10 0.44 0.18]};   % red=bad, green=good
+hdrLabel = {"Before Optimisation", "After Optimisation"};
+
 for col = 1:2
-    p   = [pLo; pHi];  p = p(col,:);
-    lbl = ["Before Optimisation", "After Optimisation"];
-    eyeH_show = [eyeLo eyeHi];
-
     ax = nexttile(tl2, col);
-    plotLinkDiagram(ax, p, eyeH_show(col));
-    title(ax, lbl(col), FontSize=10, FontWeight="bold");
+    plotLinkDiagram(ax, designs{col}, eyeShown(col), hdrColor{col});
+    title(ax, sprintf("\\bf%s", hdrLabel{col}), ...
+        FontSize=10, Color=hdrColor{col}, Interpreter="tex");
 end
 
-% Row 2: Frequency response (cascaded TX→Ch→RX)
-nexttile(tl2, 3);
-plotFreqResp(gca, impLo, dt);
-title("Frequency Response — Before", FontSize=9);
+% ── Row 2: Frequency response (cascaded TX → Channel → RX CTLE) ──────────
+imps  = {impLo, impHi};
+freqLbl = {"Frequency Response — Before", "Frequency Response — After"};
+for col = 1:2
+    ax = nexttile(tl2, 2 + col);
+    ax.Color      = [1 1 1];
+    ax.GridColor  = [0.88 0.88 0.88];
+    ax.GridAlpha  = 1;
+    [H, f] = freqz(imps{col}, 1, 512, 1/dt);
+    fGHz   = f / 1e9;
+    fMax   = 20;
+    % Normalise: set peak = 0 dB so the roll-off is always visible
+    mag    = 20*log10(abs(H) + eps);
+    mag    = mag - max(mag);
+    hold(ax, "on");
+    % Light shading drawn first so the line sits on top
+    patch(ax, [0 fMax fMax 0], [-60 -60 5 5], [0.94 0.96 1.0], ...
+        "EdgeColor","none","FaceAlpha",0.5,"HandleVisibility","off");
+    plot(ax, fGHz, mag, "LineWidth", 1.6, "Color", hdrColor{col});
+    hold(ax, "off");
+    xlim(ax, [0 fMax]);  ylim(ax, [-60 5]);
+    xlabel(ax, "Frequency (GHz)", FontSize=8);
+    ylabel(ax, "Normalised |H| (dB)", FontSize=8);
+    grid(ax, "on");  box(ax, "on");
+    title(ax, freqLbl{col}, FontSize=9, FontWeight="bold");
+end
 
-nexttile(tl2, 4);
-plotFreqResp(gca, impHi, dt);
-title("Frequency Response — After", FontSize=9);
-
-% Row 3: Eye diagram
-nexttile(tl2, 5);
-plotEyeDiagram(gca, impLo, N, dt);
-title(sprintf("Eye Diagram — Before  (%.0f mV)", eyeLo), FontSize=9);
-
-nexttile(tl2, 6);
-plotEyeDiagram(gca, impHi, N, dt);
-title(sprintf("Eye Diagram — After  (%.0f mV)", eyeHi), FontSize=9);
+% ── Row 3: Eye diagrams ───────────────────────────────────────────────────
+eyeLbl = {sprintf("Eye Diagram — Before  (%.0f mV)", eyeLo), ...
+          sprintf("Eye Diagram — After  (%.0f mV)",  eyeHi)};
+for col = 1:2
+    ax = nexttile(tl2, 4 + col);
+    plotEyeDiagram(ax, imps{col}, N, dt, eyeShown(col), eyeShown(col));
+    title(ax, eyeLbl{col}, FontSize=9, FontWeight="bold");
+end
 
 %% ── Local Functions ──────────────────────────────────────────────────────────
 
-function plotLinkDiagram(ax, p, eyeH_mV)
-%plotLinkDiagram  Draw the TX→Channel→RX block diagram annotated with
-%   the physical parameter values for one design point.
-%
+function plotLinkDiagram(ax, p, eyeH_mV, accentColor)
+%plotLinkDiagram  Draw the TX→Channel→RX block diagram with parameter values.
 %   p = [chanLoss_dB, ffePre, ffeMain, ctleDCGain_dB, ctlePeakGain_dB, ctlePeakFreq_GHz]
 
+    if nargin < 4, accentColor = [0.2 0.2 0.2]; end
+
     cla(ax); axis(ax, "off");
+    ax.Color = [1 1 1];
     hold(ax, "on");
 
-    % Layout: blocks at x = 0.05, 0.38, 0.72  width=0.22  height=0.38
-    bx = [0.05, 0.38, 0.72];
-    bw = 0.22;  bh = 0.38;  by = 0.31;
-    colors = {[0.18 0.55 0.34], [0.16 0.44 0.70], [0.80 0.36 0.12]};
-    labels = {"TX FFE", "Channel", "RX CTLE"};
+    % Block layout
+    bx  = [0.06, 0.39, 0.72];
+    bw  = 0.22;  bh = 0.30;  by = 0.40;
+    clr = {[0.13 0.47 0.71], [0.44 0.44 0.44], [0.85 0.33 0.10]};
+    lbl = {"TX FFE", "Channel", "RX CTLE"};
 
-    % Parameter text under each block
-    paramText = {
-        sprintf("Pre  = %.2f\nMain = %.2f\nPost = %.2f", ...
-            p(2), p(3), max(0, 1 - p(3) - abs(p(2))))
-        sprintf("Loss = %.0f dB\n@ Nyquist", p(1))
-        sprintf("DC  = %.0f dB\nPeak = %.0f dB\n@ %.0f GHz", p(4), p(5), p(6))
+    ffePost = max(0, 1 - p(3) - abs(p(2)));
+    paramTxt = {
+        sprintf("Pre  = %+.2f\nMain = %.2f\nPost = %+.2f", p(2), p(3), ffePost)
+        sprintf("Loss = %.0f dB", p(1))
+        sprintf("DC = %.0f dB\nPeak = %.0f dB @ %.0f GHz", p(4), p(5), p(6))
     };
 
-    for k = 1:3
-        % Block rectangle
-        rectangle(ax, "Position", [bx(k), by, bw, bh], ...
-            "FaceColor", colors{k}, "EdgeColor", "none", "Curvature", 0.15);
-        % Block label (white, bold)
-        text(ax, bx(k)+bw/2, by+bh/2, labels{k}, ...
-            "HorizontalAlignment", "center", "VerticalAlignment", "middle", ...
-            "Color", "w", "FontSize", 10, "FontWeight", "bold");
-        % Parameter annotation below block
-        text(ax, bx(k)+bw/2, by-0.08, paramText{k}, ...
-            "HorizontalAlignment", "center", "VerticalAlignment", "top", ...
-            "FontSize", 7.5, "Color", [0.2 0.2 0.2], "Interpreter", "none");
-    end
-
-    % Arrows between blocks
     arrowY = by + bh/2;
-    arrowX = [bx(1)+bw, bx(2); bx(2)+bw, bx(3)];
-    for k = 1:2
-        plot(ax, arrowX(k,:), [arrowY arrowY], "k-", "LineWidth", 1.5);
-        plot(ax, arrowX(k,2), arrowY, "k>", "MarkerSize", 6, "MarkerFaceColor", "k");
+
+    % Left stub + source label
+    plot(ax, [0.00 bx(1)], [arrowY arrowY], "-", "Color",[0.5 0.5 0.5], "LineWidth",1.4);
+    text(ax, -0.01, arrowY, "NRZ", "HorizontalAlignment","right", ...
+        "FontSize",8, "FontWeight","bold", "Color",[0.45 0.45 0.45]);
+
+    for k = 1:3
+        % Rounded rectangle block
+        rectangle(ax, "Position",[bx(k), by, bw, bh], ...
+            "FaceColor",clr{k}, "EdgeColor","none", "Curvature",0.18);
+        % Block name
+        text(ax, bx(k)+bw/2, by+bh*0.58, lbl{k}, ...
+            "HorizontalAlignment","center", "VerticalAlignment","middle", ...
+            "Color","w", "FontSize",9.5, "FontWeight","bold");
+        % Parameter values inside block (smaller)
+        text(ax, bx(k)+bw/2, by+bh*0.22, paramTxt{k}, ...
+            "HorizontalAlignment","center", "VerticalAlignment","middle", ...
+            "Color",[1 1 1 0.88], "FontSize",6.5, "Interpreter","none");
+        % Arrow to next block
+        if k < 3
+            x0 = bx(k)+bw;  x1 = bx(k+1);
+            plot(ax, [x0 x1], [arrowY arrowY], "-", "Color",[0.5 0.5 0.5], "LineWidth",1.4);
+            plot(ax, x1, arrowY, ">", "Color",[0.5 0.5 0.5], ...
+                "MarkerSize",5, "MarkerFaceColor",[0.5 0.5 0.5]);
+        end
     end
 
-    % Source (left) and sink (right) labels
-    text(ax, bx(1)-0.04, arrowY, "NRZ\nBits", ...
-        "HorizontalAlignment", "center", "FontSize", 8, "Color", [0.4 0.4 0.4]);
-    text(ax, bx(3)+bw+0.05, arrowY, sprintf("Eye\n%.0f mV", eyeH_mV), ...
-        "HorizontalAlignment", "center", "FontSize", 8, "FontWeight", "bold", ...
-        "Color", [0.6 0.1 0.1]);
+    % Right stub + eye-height badge
+    x_end = bx(3)+bw;
+    plot(ax, [x_end 1.0], [arrowY arrowY], "-", "Color",[0.5 0.5 0.5], "LineWidth",1.4);
+    rectangle(ax, "Position",[1.01, arrowY-0.13, 0.17, 0.26], ...
+        "FaceColor",accentColor, "EdgeColor","none", "Curvature",0.3);
+    text(ax, 1.095, arrowY, sprintf("%.0f\nmV", eyeH_mV), ...
+        "HorizontalAlignment","center", "VerticalAlignment","middle", ...
+        "Color","w", "FontSize",8, "FontWeight","bold");
 
-    % Left and right stub lines
-    plot(ax, [bx(1)-0.07 bx(1)], [arrowY arrowY], "k-", "LineWidth", 1.5);
-    plot(ax, [bx(3)+bw bx(3)+bw+0.07], [arrowY arrowY], "k-", "LineWidth", 1.5);
-
-    xlim(ax, [0 1]);  ylim(ax, [0 1]);
+    xlim(ax, [-0.05 1.22]);  ylim(ax, [0.10 1.0]);
     hold(ax, "off");
 end
 
@@ -313,33 +371,35 @@ end
 
 % ─────────────────────────────────────────────────────────────────────────────
 
-function plotFreqResp(ax, imp, dt)
-%plotFreqResp  Magnitude response of the cascaded TX→Ch→RX impulse.
-%   Uses Signal Processing Toolbox freqz.
-    ax.Color = [1 1 1];   % prevent colormap bleed from imagesc axes
-    [H, f] = freqz(imp, 1, 512, 1/dt);
-    f_GHz  = f / 1e9;
-    fMax   = min(20, 1/(2*dt*1e9));   % cap at 20 GHz for readability
-    plot(ax, f_GHz, 20*log10(abs(H) + eps), "LineWidth", 1.2, "Color", [0.09 0.47 0.70]);
-    xlabel(ax, "Frequency (GHz)");
-    ylabel(ax, "|H| (dB)");
-    xlim(ax, [0, fMax]);
-    ylim(ax, [-60, 5]);
-    grid(ax, "on");
-    box(ax, "on");
-end
-
-% ─────────────────────────────────────────────────────────────────────────────
-
-function plotEyeDiagram(ax, imp, N, dt)
-%plotEyeDiagram  Render eye diagram density from pulse2stateye.
-%   Uses SerDes Toolbox pulse2stateye for the statistical eye.
+function plotEyeDiagram(ax, imp, N, dt, predH, trueH)
+%plotEyeDiagram  Render statistical eye diagram using SerDes Toolbox pulse2stateye.
+%   predH / trueH (optional) — overlay predicted vs true eye height annotation.
     pulse        = impulse2pulse(imp, N, dt);
     [se, vh, th] = pulse2stateye(pulse, N, 2);
+
+    % Thermal-style colormap: black → deep blue → cyan → white
+    nC  = 256;
+    r   = [linspace(0,0,nC/2), linspace(0,1,nC/2)]';
+    g   = [linspace(0,0,nC/2), linspace(0.5,1,nC/2)]';
+    b   = [linspace(0,0.6,nC/2), linspace(0.6,1,nC/2)]';
+    cmap = [r g b];
+
     imagesc(ax, th, vh * 1000, se);
     set(ax, "YDir", "normal");
-    colormap(ax, flipud(bone));
-    xlabel(ax, "Unit Interval (UI)");
-    ylabel(ax, "Amplitude (mV)");
-    xlim(ax, [min(th) max(th)]);   % use actual th range returned by pulse2stateye
+    colormap(ax, cmap);
+    ax.Color     = [0 0 0];
+    ax.GridColor = [0.4 0.4 0.4];
+    ax.XColor    = [0.7 0.7 0.7];
+    ax.YColor    = [0.7 0.7 0.7];
+    xlabel(ax, "Unit Interval (UI)", FontSize=8, Color=[0.6 0.6 0.6]);
+    ylabel(ax, "Amplitude (mV)",     FontSize=8, Color=[0.6 0.6 0.6]);
+    xlim(ax, [min(th) max(th)]);
+
+    if nargin >= 6
+        text(ax, mean(xlim(ax)), max(ylim(ax))*0.88, ...
+            sprintf("Pred %.0f mV  |  True %.0f mV", predH, trueH), ...
+            "HorizontalAlignment","center", "FontSize",7.5, ...
+            "Color",[1 0.85 0.3], "FontWeight","bold", ...
+            "BackgroundColor",[0 0 0 0.5], "Margin", 2);
+    end
 end
