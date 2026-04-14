@@ -142,7 +142,7 @@ for si = 1:numel(snapIters)
     plotEyeDiagram(ax_e, impSnap, N, dt);
 end
 
-%% Figure 2 — Channel Before and After Design Optimisation
+%% Figure 2 — SerDes Link Setup: Before and After Design Optimisation
 % The trained surrogate ranks all validation designs by predicted eye height.
 % Worst prediction → unoptimised design.  Best prediction → optimised design.
 
@@ -154,34 +154,110 @@ end
 [~, iLo] = min(allPred);
 [~, iHi] = max(allPred);
 
-fig2 = figure(Color="w", Name="Channel: Before and After Optimisation");
-tl2  = tiledlayout(fig2, 2, 2, TileSpacing="loose", Padding="compact");
-title(tl2, "TX → Channel → RX: Before and After Design Optimisation", ...
+% Resolve physical parameters for both designs
+lo_b = paramBounds(:,1)'; hi_b = paramBounds(:,2)';
+pLo  = XVal(iLo,:) .* (hi_b - lo_b) + lo_b;
+pHi  = XVal(iHi,:) .* (hi_b - lo_b) + lo_b;
+[impLo, eyeLo] = runSerDes(XVal(iLo,:), paramBounds, UI, N, dt, BER_TARGET);
+[impHi, eyeHi] = runSerDes(XVal(iHi,:), paramBounds, UI, N, dt, BER_TARGET);
+
+fig2 = figure(Color="w", Name="SerDes Link: Before and After Optimisation", ...
+    Position=[100 100 1100 620]);
+tl2  = tiledlayout(fig2, 3, 2, TileSpacing="loose", Padding="compact");
+title(tl2, "TX → Channel → RX Link: Before and After Design Optimisation", ...
     FontSize=11, FontWeight="bold");
 
+% Row 1: SerDes link block diagram for each design
 for col = 1:2
-    idx  = [iLo iHi];   idx  = idx(col);
-    lbl  = ["Before Optimisation", "After Optimisation"];
+    p   = [pLo; pHi];  p = p(col,:);
+    lbl = ["Before Optimisation", "After Optimisation"];
+    eyeH_show = [eyeLo eyeHi];
 
-    [imp2, eyeH2] = runSerDes(XVal(idx,:), paramBounds, UI, N, dt, BER_TARGET);
-    lo = paramBounds(:,1)'; hi = paramBounds(:,2)';
-    p  = XVal(idx,:) .* (hi - lo) + lo;   % physical units
-
-    % Frequency response
-    nexttile(tl2, col);
-    plotFreqResp(gca, imp2, dt);
-    title(sprintf("%s\nEye Height = %.0f mV", lbl(col), eyeH2), FontSize=9);
-
-    % Eye diagram + parameter annotation
-    nexttile(tl2, 2 + col);
-    plotEyeDiagram(gca, imp2, N, dt);
-    xlabel(sprintf( ...
-        'Loss = %.0f dB   FFE = [%.2f  %.2f]   CTLE DC = %.0f dB  Peak = %.0f dB @ %.0f GHz', ...
-        p(1), p(2), p(3), p(4), p(5), p(6)), ...
-        FontSize=7, Interpreter="none");
+    ax = nexttile(tl2, col);
+    plotLinkDiagram(ax, p, eyeH_show(col));
+    title(ax, lbl(col), FontSize=10, FontWeight="bold");
 end
 
+% Row 2: Frequency response (cascaded TX→Ch→RX)
+nexttile(tl2, 3);
+plotFreqResp(gca, impLo, dt);
+title("Frequency Response — Before", FontSize=9);
+
+nexttile(tl2, 4);
+plotFreqResp(gca, impHi, dt);
+title("Frequency Response — After", FontSize=9);
+
+% Row 3: Eye diagram
+nexttile(tl2, 5);
+plotEyeDiagram(gca, impLo, N, dt);
+title(sprintf("Eye Diagram — Before  (%.0f mV)", eyeLo), FontSize=9);
+
+nexttile(tl2, 6);
+plotEyeDiagram(gca, impHi, N, dt);
+title(sprintf("Eye Diagram — After  (%.0f mV)", eyeHi), FontSize=9);
+
 %% ── Local Functions ──────────────────────────────────────────────────────────
+
+function plotLinkDiagram(ax, p, eyeH_mV)
+%plotLinkDiagram  Draw the TX→Channel→RX block diagram annotated with
+%   the physical parameter values for one design point.
+%
+%   p = [chanLoss_dB, ffePre, ffeMain, ctleDCGain_dB, ctlePeakGain_dB, ctlePeakFreq_GHz]
+
+    cla(ax); axis(ax, "off");
+    hold(ax, "on");
+
+    % Layout: blocks at x = 0.05, 0.38, 0.72  width=0.22  height=0.38
+    bx = [0.05, 0.38, 0.72];
+    bw = 0.22;  bh = 0.38;  by = 0.31;
+    colors = {[0.18 0.55 0.34], [0.16 0.44 0.70], [0.80 0.36 0.12]};
+    labels = {"TX FFE", "Channel", "RX CTLE"};
+
+    % Parameter text under each block
+    paramText = {
+        sprintf("Pre  = %.2f\nMain = %.2f\nPost = %.2f", ...
+            p(2), p(3), max(0, 1 - p(3) - abs(p(2))))
+        sprintf("Loss = %.0f dB\n@ Nyquist", p(1))
+        sprintf("DC  = %.0f dB\nPeak = %.0f dB\n@ %.0f GHz", p(4), p(5), p(6))
+    };
+
+    for k = 1:3
+        % Block rectangle
+        rectangle(ax, "Position", [bx(k), by, bw, bh], ...
+            "FaceColor", colors{k}, "EdgeColor", "none", "Curvature", 0.15);
+        % Block label (white, bold)
+        text(ax, bx(k)+bw/2, by+bh/2, labels{k}, ...
+            "HorizontalAlignment", "center", "VerticalAlignment", "middle", ...
+            "Color", "w", "FontSize", 10, "FontWeight", "bold");
+        % Parameter annotation below block
+        text(ax, bx(k)+bw/2, by-0.08, paramText{k}, ...
+            "HorizontalAlignment", "center", "VerticalAlignment", "top", ...
+            "FontSize", 7.5, "Color", [0.2 0.2 0.2], "Interpreter", "none");
+    end
+
+    % Arrows between blocks
+    arrowY = by + bh/2;
+    arrowX = [bx(1)+bw, bx(2); bx(2)+bw, bx(3)];
+    for k = 1:2
+        plot(ax, arrowX(k,:), [arrowY arrowY], "k-", "LineWidth", 1.5);
+        plot(ax, arrowX(k,2), arrowY, "k>", "MarkerSize", 6, "MarkerFaceColor", "k");
+    end
+
+    % Source (left) and sink (right) labels
+    text(ax, bx(1)-0.04, arrowY, "NRZ\nBits", ...
+        "HorizontalAlignment", "center", "FontSize", 8, "Color", [0.4 0.4 0.4]);
+    text(ax, bx(3)+bw+0.05, arrowY, sprintf("Eye\n%.0f mV", eyeH_mV), ...
+        "HorizontalAlignment", "center", "FontSize", 8, "FontWeight", "bold", ...
+        "Color", [0.6 0.1 0.1]);
+
+    % Left and right stub lines
+    plot(ax, [bx(1)-0.07 bx(1)], [arrowY arrowY], "k-", "LineWidth", 1.5);
+    plot(ax, [bx(3)+bw bx(3)+bw+0.07], [arrowY arrowY], "k-", "LineWidth", 1.5);
+
+    xlim(ax, [0 1]);  ylim(ax, [0 1]);
+    hold(ax, "off");
+end
+
 
 function [imp, eyeH_mV] = runSerDes(params01, bounds, UI, N, dt, ber)
 %runSerDes  Simulate TX FFE → Channel → RX CTLE using SerDes Toolbox.
@@ -264,5 +340,5 @@ function plotEyeDiagram(ax, imp, N, dt)
     colormap(ax, flipud(bone));
     xlabel(ax, "Unit Interval (UI)");
     ylabel(ax, "Amplitude (mV)");
-    xlim(ax, [min(th) max(th)]);
+    xlim(ax, [0.5 1.5]);   % show central eye (pulse2stateye spans 2 UI)
 end
