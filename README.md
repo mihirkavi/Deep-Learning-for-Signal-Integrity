@@ -1,5 +1,8 @@
 # Deep Learning for Signal Integrity
 
+MATLAB neural-network surrogates that predict high-speed channel eye height and
+eye width for signal-integrity analysis.
+
 This repository turns a published signal-integrity modeling workflow into a
 small MATLAB project that is easy to run, inspect, and extend. The current
 cleanup emphasizes explicit naming over abbreviations so the code reads
@@ -33,6 +36,17 @@ comparisons, training, and reporting lives under
 - `signalIntegrityWorkflowExample.m`: guided walkthrough script
 - `signalIntegrityWorkflowRunner.m`: minimal runner script
 - `createSignalIntegrityDataTemplate.m`: recreates the placeholder MAT-file
+- `ChannelModelingWithDeepLearning.m`: standalone physics-informed script (see below)
+
+## Physics-Informed Channel Modeling Script
+
+`ChannelModelingWithDeepLearning.m` is a standalone live-script-style example
+that trains a neural network to predict eye height from SerDes design
+parameters. Instead of a pre-generated dataset, each training step calls the
+SerDes Toolbox (TX FFE, frequency-dependent channel loss, RX CTLE) as a live
+physics oracle. It requires the SerDes Toolbox, Deep Learning Toolbox and
+Signal Processing Toolbox. A published PDF of the script is in
+[`html/ChannelModelingWithDeepLearning.pdf`](html/ChannelModelingWithDeepLearning.pdf).
 
 ## Naming Conventions
 
